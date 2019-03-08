@@ -21,7 +21,7 @@ against a server.
 $ wsrpc -h
 usage: wsrpc address [flags] method [arg]
   -c string
-        Root certificate chain
+        Root certificate PEM file
   -p string
         Password
   -u string

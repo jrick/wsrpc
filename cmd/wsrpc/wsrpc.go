@@ -21,7 +21,7 @@ import (
 
 var (
 	fs       = flag.NewFlagSet("", flag.ExitOnError)
-	cFlag    = fs.String("c", "", "Root certificate chain")
+	cFlag    = fs.String("c", "", "Root certificate PEM file")
 	userFlag = fs.String("u", "", "User")
 	passFlag = fs.String("p", "", "Password")
 )
