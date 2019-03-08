@@ -17,6 +17,8 @@ request parameters when performing calls.
 A command line tool is provided to perform individual websocket JSON-RPCs
 against a server.
 
+A JSON array must be used to passed parameters to a RPC.
+
 ```
 $ wsrpc -h
 usage: wsrpc address [flags] method [arg]
