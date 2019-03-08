@@ -73,7 +73,6 @@ func run(ctx context.Context, c *wsrpc.Client, method string, arg string) error 
 	defer c.Close()
 	var args []interface{}
 	if arg != "" {
-
 		if err := json.NewDecoder(strings.NewReader(arg)).Decode(&args); err != nil {
 			return err
 		}
