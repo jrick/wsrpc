@@ -39,7 +39,7 @@ $ wsrpc wss://dcrd0.i.zettaport.com:9109/ws -c dcrd0.pem -u jrick -p sekrit geti
   "relayfee": 0.0001,
   "errors": ""
 }
-$ wsrpc wss://dcrd0.i.zettaport.com:9109/ws -c dcrd0.pem -u jrick -p sekrit getblockhash '[324795]'                                  
+$ wsrpc wss://dcrd0.i.zettaport.com:9109/ws -c dcrd0.pem -u jrick -p sekrit getblockhash '[324795]'
 "0000000000000000235b1210221d412c428237175dbb0aef202277d1706b9312"
 ```
 
