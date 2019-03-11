@@ -87,8 +87,8 @@ type Option func(*options)
 // set connection timeouts.
 type DialFunc func(network, address string) (net.Conn, error)
 
-// WithDialer specifies a custom dial function.
-func WithDialerConfig(dial DialFunc) Option {
+// WithDial specifies a custom dial function.
+func WithDial(dial DialFunc) Option {
 	return func(o *options) {
 		o.dial = dial
 	}
