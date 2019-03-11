@@ -161,12 +161,12 @@ func (ag *agent) serve(conn net.Conn) {
 		log.Println(err)
 		return
 	}
+	addr := args.Address
 	var res json.RawMessage
 	var err error
 	ag.mu.Lock()
 	c, ok := ag.clients[args.Address]
 	if !ok {
-		addr := args.Address
 		c, err = dial(addr, args.RootCert, args.User, args.Pass)
 		if err != nil {
 			err = fmt.Errorf("dial: %v", err)
@@ -177,7 +177,7 @@ func (ag *agent) serve(conn net.Conn) {
 				delete(ag.clients[addr])
 				ag.mu.Unlock()
 			}()
-			ag.clients[args.Address] = c
+			ag.clients[addr] = c
 		}
 	}
 	ag.mu.Unlock()
