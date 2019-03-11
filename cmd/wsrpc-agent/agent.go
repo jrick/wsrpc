@@ -166,10 +166,17 @@ func (ag *agent) serve(conn net.Conn) {
 	ag.mu.Lock()
 	c, ok := ag.clients[args.Address]
 	if !ok {
-		c, err = dial(args.Address, args.RootCert, args.User, args.Pass)
+		addr := args.Address
+		c, err = dial(addr, args.RootCert, args.User, args.Pass)
 		if err != nil {
 			err = fmt.Errorf("dial: %v", err)
 		} else {
+			go func() {
+				c.Err()
+				ag.mu.Lock()
+				delete(ag.clients[addr])
+				ag.mu.Unlock()
+			}()
 			ag.clients[args.Address] = c
 		}
 	}

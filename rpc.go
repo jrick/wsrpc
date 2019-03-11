@@ -269,3 +269,9 @@ func (c *Client) Call(ctx context.Context, method string, result interface{}, ar
 		return err
 	}
 }
+
+// Err blocks until the client has shutdown and returns the final error.
+func (c *Client) Err() error {
+	<-c.errc
+	return c.err
+}
