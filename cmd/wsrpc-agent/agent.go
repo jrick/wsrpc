@@ -165,7 +165,7 @@ func (ag *agent) serve(conn net.Conn) {
 	var res json.RawMessage
 	var err error
 	ag.mu.Lock()
-	c, ok := ag.clients[args.Address]
+	c, ok := ag.clients[addr]
 	if !ok {
 		c, err = dial(addr, args.RootCert, args.User, args.Pass)
 		if err != nil {
