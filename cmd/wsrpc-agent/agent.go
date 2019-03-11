@@ -175,7 +175,13 @@ func (ag *agent) serve(conn net.Conn) {
 	}
 	ag.mu.Unlock()
 	if err == nil {
-		err = c.Call(context.Background(), args.Method, &res)
+		var a []interface{}
+		if args.Params != "" {
+			err = json.NewDecoder(strings.NewReader(args.Params)).Decode(&a)
+		}
+		if err == nil {
+			err = c.Call(context.Background(), args.Method, &res, a...)
+		}
 	}
 	var es string
 	if err != nil {
