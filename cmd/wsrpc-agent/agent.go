@@ -174,7 +174,7 @@ func (ag *agent) serve(conn net.Conn) {
 			go func() {
 				c.Err()
 				ag.mu.Lock()
-				delete(ag.clients[addr])
+				delete(ag.clients, addr)
 				ag.mu.Unlock()
 			}()
 			ag.clients[addr] = c
