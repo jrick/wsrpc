@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -12,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -40,13 +42,20 @@ const pidEnv = "WSRPCAGENT_PID"
 func main() {
 	// Go has no fork/exec (already multithreaded before main), so spawning
 	// ourselves with undocumented -daemon=ppid flag is next best thing.
-	if len(os.Args) == 2 && strings.HasPrefix(os.Args[1], "-daemon=") {
+	if len(os.Args) >= 2 && strings.HasPrefix(os.Args[1], "-daemon=") {
 		if strconv.Itoa(os.Getppid()) == os.Args[1][len("-daemon="):] {
 			daemon()
 			return
 		}
 		log.Fatal("bad ppid")
 	}
+
+	flag.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage (exec):\twsrpc-agent cmd [args...]")
+		fmt.Fprintln(os.Stderr, "usage (daemon):\teval $(wsrpc-agent)")
+		os.Exit(2)
+	}
+	flag.Parse()
 
 	if runtime.GOOS == "linux" {
 		var username string
@@ -64,8 +73,17 @@ func main() {
 		log.Fatal(authEnv + " is set")
 	}
 
-	cmd := exec.Command(os.Args[0], fmt.Sprintf("-daemon=%d", os.Getpid()))
+	args := make([]string, 1, 2)
+	args[0] = fmt.Sprintf("-daemon=%d", os.Getpid())
+	if len(os.Args) > 1 {
+		args = append(args, "-exec")
+	}
+	cmd := exec.Command(os.Args[0], args...)
 	cmd.Stderr = os.Stderr
+	daemonStdin, err := cmd.StdinPipe()
+	if err != nil {
+		log.Fatal(err)
+	}
 	daemonStdout, err := cmd.StdoutPipe()
 	if err != nil {
 		log.Fatal(err)
@@ -73,7 +91,45 @@ func main() {
 	if err := cmd.Start(); err != nil {
 		log.Fatal(err)
 	}
-	if _, err := io.Copy(os.Stdout, daemonStdout); err != nil && err != io.EOF {
+
+	s := bufio.NewScanner(daemonStdout)
+	scanText := func() string {
+		s.Scan()
+		return s.Text()
+	}
+	auth := scanText()
+	sock := scanText()
+	cpid := scanText()
+	if err := s.Err(); err != nil {
+		log.Fatal(err)
+	}
+
+	if len(os.Args) == 1 {
+		fmt.Printf(authEnv+"='%s'; export "+authEnv+";\n", auth)
+		fmt.Printf(sockEnv+"='%s'; export "+sockEnv+";\n", sock)
+		fmt.Printf(pidEnv+"='%s'; export "+pidEnv+";\n", cpid)
+		fmt.Printf("echo 'Agent listening on %v'\n", sock)
+		return
+	}
+
+	setenv := func(key, value string) {
+		if err := os.Setenv(key, value); err != nil {
+			log.Fatal(err)
+		}
+	}
+	setenv(authEnv, auth)
+	setenv(sockEnv, sock)
+	setenv(pidEnv, cpid)
+	cmd = exec.Command(os.Args[1], os.Args[2:]...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err = cmd.Run()
+	daemonStdin.Close()
+	if err != nil {
+		if exit, ok := err.(*exec.ExitError); ok {
+			os.Exit(exit.ExitCode())
+		}
 		log.Fatal(err)
 	}
 }
@@ -101,12 +157,19 @@ func daemon() {
 		log.Fatal(err)
 	}
 
-	// Write output for, and close, parent process.
-	fmt.Printf(authEnv+"='%s'; export "+authEnv+";\n", auth)
-	fmt.Printf(sockEnv+"='%s'; export "+sockEnv+";\n", lis.Addr())
-	fmt.Printf(pidEnv+"='%d'; export "+pidEnv+";\n", os.Getpid())
-	fmt.Printf("echo 'Agent listening on %v'\n", lis.Addr())
+	// Write auth, socket, and pid to parent.
+	fmt.Println(auth)
+	fmt.Println(lis.Addr())
+	fmt.Println(os.Getpid())
 	os.Stdout.Close()
+
+	// Exit when parent closes stdin if parent is executing command.
+	if len(os.Args) == 3 && os.Args[2] == "-exec" {
+		go func() {
+			io.Copy(ioutil.Discard, os.Stdin)
+			os.Exit(1)
+		}()
+	}
 
 	ag := agent{
 		tmp:     tmpDir,

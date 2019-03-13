@@ -45,9 +45,21 @@ $ wsrpc wss://dcrd0.i.zettaport.com:9109/ws -c dcrd0.pem -u jrick -p sekrit getb
 "0000000000000000235b1210221d412c428237175dbb0aef202277d1706b9312"
 ```
 
-The `wsrpc-agent` tool can be optionally used to manage persistent websocket
-connections for `wsrpc` client usage.  Usage is similar to `ssh-agent`.  TLS and
-RPC authentication flags only apply to the initial connection.
+
+The `wsrpc-agent` tool can be optionally used to manage persistent connections.
+Usage of the agent is similar to `ssh-agent`.  The agent can exec a command,
+running only so long as the command continues to run, or by daemonizing and
+using eval to set the environment of the Bourne shell:
+
+```
+$ wsrpc-agent -h
+usage (exec):   wsrpc-agent cmd [args...]
+usage (daemon): eval $(wsrpc-agent)
+```
+
+Once running, `wsrpc` will use the `WSRPCAGENT_SOCK` and `WSRPCAGENT_AUTH`
+environment variables to perform IPC with the agent.  TLS and RPC authentication
+flags only apply to the initial connection.
 
 ```
 $ eval `wsrpc-agent`
@@ -60,4 +72,4 @@ $ wsrpc wss://dcrd0.i.zettaport.com:9109/ws getblockhash '[324795]'
 
 ## License
 
-wsrpc is implemented under the liberal ISC License.
+wsrpc is licensed under the permissive ISC License.
