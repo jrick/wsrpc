@@ -1,7 +1,3 @@
-// Copyright (c) 2019 Josh Rickmar
-// Use of this source code is governed by an ISC
-// license that can be found in the LICENSE file.
-
 /*
 Package wsrpc provides a partial implementation of a JSON-RPC 2.0 websocket
 client.  Inspired by net/rpc, clients call methods by their name with arguments
