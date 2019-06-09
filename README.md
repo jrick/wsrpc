@@ -72,4 +72,5 @@ $ wsrpc wss://dcrd0.i.zettaport.com:9109/ws getblockhash '[324795]'
 
 ## License
 
-wsrpc is licensed under the permissive ISC License.
+wsrpc is licensed under the permissive
+[Blue Oak Model License 1.0.0](https://blueoakcouncil.org/license/1.0.0).
