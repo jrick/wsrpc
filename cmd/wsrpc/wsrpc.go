@@ -13,7 +13,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jrick/wsrpc"
+	"github.com/jrick/wsrpc/v2"
 )
 
 const sockEnv = "WSRPCAGENT_SOCK"

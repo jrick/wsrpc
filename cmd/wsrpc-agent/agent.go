@@ -24,7 +24,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/jrick/wsrpc"
+	"github.com/jrick/wsrpc/v2"
 )
 
 func init() {

@@ -1,4 +1,4 @@
-module github.com/jrick/wsrpc
+module github.com/jrick/wsrpc/v2
 
 go 1.11
 

@@ -10,7 +10,7 @@ JSON-RPC parameters into meaningful data.
 This package currently does not implement JSON-RPC 2.0 request batching or keyed
 request parameters when performing calls.
 */
-package wsrpc // import "github.com/jrick/wsrpc"
+package wsrpc
 
 import (
 	"bytes"
@@ -19,6 +19,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"sync"
@@ -36,19 +37,24 @@ type Error struct {
 
 func (e *Error) Error() string { return e.Message }
 
-// Notification represents a JSON-RPC notification.  Method defines the type of
-// notification and Params describes the arguments (positional or keyed) if any
+// Notifier handles JSON-RPC notifications.  Method defines the type of
+// notification and params describes the arguments (positional or keyed) if any
 // were included in the Request object.
-type Notification struct {
-	Method string
-	Params json.RawMessage
+//
+// Notify is never called concurrently and is called with notifications in the
+// order received.  Blocking in Notify only blocks other Notify calls and does
+// not prevent the Client from receiving further buffered notifications and
+// processing calls.
+//
+// If Notify returns an error, the client is closed and no more notifications
+// are processed.  If this is the first error observed by the client, it will be
+// returned by Err.
+//
+// If Notifier implements io.Closer, Close is called following the final
+// notification.
+type Notifier interface {
+	Notify(method string, params json.RawMessage) error
 }
-
-// Notifier is a channel of received JSON-RPC notifications.  Notifications are
-// sent in the order received.  Notifier is closed after the client connection
-// is broken.  Notifications may be read from the channel after client
-// disconnect if there is enough backpressure.
-type Notifier chan Notification
 
 type call struct {
 	method string
@@ -65,6 +71,7 @@ type Client struct {
 	calls     map[uint32]*call
 	callMu    sync.Mutex
 	writing   sync.Mutex
+	errMu     sync.Mutex    // synchronizes writes to err before errc is closed
 	errc      chan struct{} // closed after err is set
 	err       error
 }
@@ -81,7 +88,7 @@ type Option func(*options)
 
 // DialFunc dials a network connection.  Custom dialers may utilize a proxy or
 // set connection timeouts.
-type DialFunc func(network, address string) (net.Conn, error)
+type DialFunc func(ctx context.Context, network, address string) (net.Conn, error)
 
 // WithDial specifies a custom dial function.
 func WithDial(dial DialFunc) Option {
@@ -109,9 +116,9 @@ func WithTLSConfig(tls *tls.Config) Option {
 	}
 }
 
-// WithNotifier specifies a channel to read received JSON-RPC notifications.
-// The channel is closed when no futher notifications will be sent.
-// Notifications may be read from the channel after the client has closed.
+// WithNotifier specifies a Notifier to handle received JSON-RPC notifications.
+// Notifications may continue to be processed after the client has closed.
+// Notifications are dropped by Client if a Notifier is not configured.
 func WithNotifier(n Notifier) Option {
 	return func(o *options) {
 		o.notify = n
@@ -126,7 +133,7 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 		f(&o)
 	}
 	dialer := websocket.Dialer{
-		NetDial:           o.dial,
+		NetDialContext:    o.dial,
 		TLSClientConfig:   o.tls,
 		EnableCompression: true,
 	}
@@ -145,8 +152,8 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 	return c, nil
 }
 
-// Address returns the dialed network address.
-func (c *Client) Address() string {
+// String returns the dialed websocket URL.
+func (c *Client) String() string {
 	return c.addr
 }
 
@@ -155,19 +162,23 @@ func (c *Client) Close() error {
 	return c.ws.Close()
 }
 
+func (c *Client) setErr(err error) {
+	c.errMu.Lock()
+	if c.err == nil {
+		c.err = err
+		close(c.errc)
+		if closer, ok := c.notify.(io.Closer); ok {
+			closer.Close()
+		}
+	}
+	c.errMu.Unlock()
+}
+
 func (c *Client) in() {
 	// pair of channel vars retains notification processing order
 	block, unblockNext := make(chan struct{}), make(chan struct{})
 	close(block)
-	// notify chan is closed in background after final notification is sent
-	if c.notify != nil {
-		defer func() {
-			go func() {
-				<-block
-				close(c.notify)
-			}()
-		}()
-	}
+
 	for {
 		var resp struct {
 			Result json.RawMessage `json:"result"`
@@ -180,8 +191,7 @@ func (c *Client) in() {
 		}
 		err := c.ws.ReadJSON(&resp)
 		if err != nil {
-			c.err = err
-			close(c.errc)
+			c.setErr(err)
 			return
 		}
 		// Zero IDs are never used by requests
@@ -189,9 +199,17 @@ func (c *Client) in() {
 			// it's a notification
 			if c.notify != nil {
 				go func(block, unblockNext chan struct{}) {
-					<-block
-					c.notify <- Notification{resp.Method, resp.Params}
-					unblockNext <- struct{}{}
+					select {
+					case <-c.errc:
+						return
+					case <-block:
+					}
+					err := c.notify.Notify(resp.Method, resp.Params)
+					if err != nil {
+						c.setErr(err)
+						c.ws.Close()
+					}
+					close(unblockNext)
 				}(block, unblockNext)
 				block, unblockNext = unblockNext, make(chan struct{})
 			}
@@ -201,8 +219,7 @@ func (c *Client) in() {
 		call, ok := c.calls[resp.ID]
 		c.callMu.Unlock()
 		if !ok {
-			c.err = errors.New("wsrpc: unknown response ID")
-			close(c.errc)
+			c.setErr(errors.New("wsrpc: unknown response ID"))
 			return
 		}
 		if resp.Error != nil {
@@ -264,6 +281,11 @@ func (c *Client) Call(ctx context.Context, method string, result interface{}, ar
 	case err := <-call.err:
 		return err
 	}
+}
+
+// Done returns a channel that is closed after the client's final error is set.
+func (c *Client) Done() <-chan struct{} {
+	return c.errc
 }
 
 // Err blocks until the client has shutdown and returns the final error.
