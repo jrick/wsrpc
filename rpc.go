@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"time"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -27,6 +28,8 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+const writeWait = 10 * time.Second // allowed duration before timing out a write
 
 // Error represents a JSON-RPC error object.
 type Error struct {
@@ -64,23 +67,27 @@ type call struct {
 
 // Client implements JSON-RPC calls and notifications over a websocket.
 type Client struct {
-	atomicSeq uint32
-	addr      string
-	ws        *websocket.Conn
-	notify    Notifier
-	calls     map[uint32]*call
-	callMu    sync.Mutex
-	writing   sync.Mutex
-	errMu     sync.Mutex    // synchronizes writes to err before errc is closed
-	errc      chan struct{} // closed after err is set
-	err       error
+	atomicSeq  uint32
+	addr       string
+	ws         *websocket.Conn
+	pongWait   time.Duration
+	pingPeriod time.Duration
+	notify     Notifier
+	calls      map[uint32]*call
+	callMu     sync.Mutex
+	writing    sync.Mutex
+	errMu      sync.Mutex    // synchronizes writes to err before errc is closed
+	errc       chan struct{} // closed after err is set
+	err        error
 }
 
 type options struct {
-	tls    *tls.Config
-	header http.Header
-	dial   DialFunc
-	notify Notifier
+	tls        *tls.Config
+	header     http.Header
+	dial       DialFunc
+	notify     Notifier
+	pongWait   time.Duration
+	pingPeriod time.Duration
 }
 
 // Option modifies the behavior of Dial.
@@ -125,10 +132,24 @@ func WithNotifier(n Notifier) Option {
 	}
 }
 
+// WithPingPeriod specifies a duration between pings sent on a timer.  A pong
+// message not received within this period (plus a tolerance) causes connection
+// termination.  A period of 0 disables the mechanism.
+//
+// The default value is one minute.
+func WithPingPeriod(period time.Duration) Option {
+	return func(o *options) {
+		o.pingPeriod = period
+		o.pongWait = 10 * period / 9
+	}
+}
+
 // Dial establishes an RPC client connection to the server described by addr.
 // Addr must be the URL of the websocket, e.g., "wss://[::1]:9109/ws".
 func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 	var o options
+	o.pingPeriod = 60 * time.Second
+	o.pongWait = 10 * o.pingPeriod / 9
 	for _, f := range opts {
 		f(&o)
 	}
@@ -149,6 +170,9 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 		errc:   make(chan struct{}),
 	}
 	go c.in()
+	if o.pingPeriod != 0 {
+		go c.ping()
+	}
 	return c, nil
 }
 
@@ -174,6 +198,23 @@ func (c *Client) setErr(err error) {
 	c.errMu.Unlock()
 }
 
+func (c *Client) ping() {
+	for {
+		select {
+		case <-c.Done():
+		case <-time.After(c.pingPeriod):
+			c.writing.Lock()
+			c.ws.SetWriteDeadline(time.Now().Add(writeWait))
+			err := c.ws.WriteMessage(websocket.PingMessage, nil)
+			c.writing.Unlock()
+			if err != nil {
+				c.setErr(err)
+				return
+			}
+		}
+	}
+}
+
 func (c *Client) in() {
 	// pair of channel vars retains notification processing order
 	block, unblockNext := make(chan struct{}), make(chan struct{})
@@ -189,7 +230,18 @@ func (c *Client) in() {
 			Method string          `json:"method"`
 			Params json.RawMessage `json:"params"`
 		}
-		err := c.ws.ReadJSON(&resp)
+		messageType, r, err := c.ws.NextReader()
+		if err != nil {
+			c.setErr(err)
+			return
+		}
+		if messageType == websocket.PongMessage {
+			if c.pongWait != 0 {
+				c.ws.SetReadDeadline(time.Now().Add(c.pongWait))
+			}
+			continue
+		}
+		err = json.NewDecoder(r).Decode(&resp)
 		if err != nil {
 			c.setErr(err)
 			return
@@ -267,6 +319,7 @@ func (c *Client) Call(ctx context.Context, method string, result interface{}, ar
 		ID:      id,
 	}
 	c.writing.Lock()
+	c.ws.SetWriteDeadline(time.Now().Add(writeWait))
 	err = c.ws.WriteJSON(request)
 	c.writing.Unlock()
 	if err != nil {
