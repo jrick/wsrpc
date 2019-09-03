@@ -199,11 +199,16 @@ func (c *Client) setErr(err error) {
 }
 
 func (c *Client) ping() {
+	ticker := time.NewTicker(c.pingPeriod)
+	defer func() {
+		ticker.Stop()
+		c.ws.Close()
+	}()
 	for {
 		select {
 		case <-c.Done():
 			return
-		case <-time.After(c.pingPeriod):
+		case <-ticker.C:
 			c.writing.Lock()
 			c.ws.SetWriteDeadline(time.Now().Add(writeWait))
 			err := c.ws.WriteMessage(websocket.PingMessage, nil)
