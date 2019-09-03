@@ -202,6 +202,7 @@ func (c *Client) ping() {
 	for {
 		select {
 		case <-c.Done():
+			return
 		case <-time.After(c.pingPeriod):
 			c.writing.Lock()
 			c.ws.SetWriteDeadline(time.Now().Add(writeWait))
