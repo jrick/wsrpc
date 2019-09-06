@@ -169,10 +169,13 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 		calls:  make(map[uint32]*call),
 		errc:   make(chan struct{}),
 	}
-	go c.in()
 	if o.pingPeriod != 0 {
+		// Initial read deadline must be set for the first ping message
+		// sent pingPeriod from now.
+		ws.SetReadDeadline(time.Now().Add(c.pingPeriod + c.pongWait))
 		go c.ping()
 	}
+	go c.in()
 	return c, nil
 }
 
