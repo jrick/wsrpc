@@ -16,7 +16,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"time"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -25,6 +24,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -163,11 +163,13 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 		return nil, err
 	}
 	c := &Client{
-		addr:   addr,
-		ws:     ws,
-		notify: o.notify,
-		calls:  make(map[uint32]*call),
-		errc:   make(chan struct{}),
+		addr:       addr,
+		ws:         ws,
+		pongWait:   o.pongWait,
+		pingPeriod: o.pingPeriod,
+		notify:     o.notify,
+		calls:      make(map[uint32]*call),
+		errc:       make(chan struct{}),
 	}
 	if o.pingPeriod != 0 {
 		// Initial read deadline must be set for the first ping message
