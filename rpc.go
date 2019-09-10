@@ -172,6 +172,10 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 		errc:       make(chan struct{}),
 	}
 	if o.pingPeriod != 0 {
+		ws.SetPongHandler(func(string) error {
+			ws.SetReadDeadline(time.Now().Add(c.pongWait))
+			return nil
+		})
 		// Initial read deadline must be set for the first ping message
 		// sent pingPeriod from now.
 		ws.SetReadDeadline(time.Now().Add(c.pingPeriod + c.pongWait))
@@ -241,18 +245,7 @@ func (c *Client) in() {
 			Method string          `json:"method"`
 			Params json.RawMessage `json:"params"`
 		}
-		messageType, r, err := c.ws.NextReader()
-		if err != nil {
-			c.setErr(err)
-			return
-		}
-		if messageType == websocket.PongMessage {
-			if c.pongWait != 0 {
-				c.ws.SetReadDeadline(time.Now().Add(c.pongWait))
-			}
-			continue
-		}
-		err = json.NewDecoder(r).Decode(&resp)
+		err := c.ws.ReadJSON(&resp)
 		if err != nil {
 			c.setErr(err)
 			return
