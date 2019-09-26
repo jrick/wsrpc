@@ -190,9 +190,18 @@ func (c *Client) String() string {
 	return c.addr
 }
 
-// Close closes the underlying websocket connection.
+// Close sends a websocket close control message and closes the underlying
+// network connection.
 func (c *Client) Close() error {
-	return c.ws.Close()
+	defer c.writing.Unlock()
+	c.writing.Lock()
+	msg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")
+	writeErr := c.ws.WriteControl(websocket.CloseMessage, msg, time.Now().Add(writeWait))
+	closeErr := c.ws.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	return closeErr
 }
 
 func (c *Client) setErr(err error) {
