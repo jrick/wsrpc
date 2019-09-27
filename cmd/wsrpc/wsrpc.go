@@ -125,6 +125,11 @@ type agentArgs struct {
 
 func runAgent(ctx context.Context, conn net.Conn, auth string, args *agentArgs) error {
 	defer conn.Close()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	enc := json.NewEncoder(conn)
 	if err := enc.Encode(auth); err != nil {
 		log.Fatal(err)
