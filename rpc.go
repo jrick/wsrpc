@@ -22,6 +22,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"runtime/trace"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -173,15 +174,19 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 	}
 	if o.pingPeriod != 0 {
 		ws.SetPongHandler(func(string) error {
-			ws.SetReadDeadline(time.Now().Add(c.pongWait))
+			readDeadline := time.Now().Add(c.pongWait)
+			trace.Logf(ctx, "", "received pong; setting new read deadline %v", readDeadline)
+			ws.SetReadDeadline(readDeadline)
 			return nil
 		})
 		// Initial read deadline must be set for the first ping message
 		// sent pingPeriod from now.
-		ws.SetReadDeadline(time.Now().Add(c.pingPeriod + c.pongWait))
-		go c.ping()
+		readDeadline := time.Now().Add(c.pingPeriod + c.pongWait)
+		trace.Logf(ctx, "", "received pong; setting first read deadline %v", readDeadline)
+		ws.SetReadDeadline(readDeadline)
+		go c.ping(ctx)
 	}
-	go c.in()
+	go c.in(ctx)
 	return c, nil
 }
 
@@ -216,7 +221,7 @@ func (c *Client) setErr(err error) {
 	c.errMu.Unlock()
 }
 
-func (c *Client) ping() {
+func (c *Client) ping(ctx context.Context) {
 	ticker := time.NewTicker(c.pingPeriod)
 	defer func() {
 		ticker.Stop()
@@ -227,10 +232,19 @@ func (c *Client) ping() {
 		case <-c.Done():
 			return
 		case <-ticker.C:
+			ctx, task := trace.NewTask(ctx, "pinging")
 			c.writing.Lock()
-			c.ws.SetWriteDeadline(time.Now().Add(writeWait))
+			trace.Logf(ctx, "", "acquired write mutex")
+			writeDeadline := time.Now().Add(writeWait)
+			trace.Logf(ctx, "", "setting write deadline %v", writeDeadline)
+			c.ws.SetWriteDeadline(writeDeadline)
+			trace.Logf(ctx, "", "sending ping message")
 			err := c.ws.WriteMessage(websocket.PingMessage, nil)
 			c.writing.Unlock()
+			if err != nil {
+				trace.Logf(ctx, "", "writing ping failed: %v", err)
+			}
+			task.End()
 			if err != nil {
 				c.setErr(err)
 				return
@@ -239,12 +253,28 @@ func (c *Client) ping() {
 	}
 }
 
-func (c *Client) in() {
+func (c *Client) in(ctx context.Context) {
 	// pair of channel vars retains notification processing order
 	block, unblockNext := make(chan struct{}), make(chan struct{})
 	close(block)
 
+	var task *trace.Task
+	defer func() {
+		if task != nil {
+			task.End()
+		}
+	}()
 	for {
+		// End previous task (if any) and begin a new one to handle a
+		// JSON-RPC response or notification.
+		if task != nil {
+			task.End()
+		}
+		ctx, task = trace.NewTask(ctx, "in")
+		log := func(format string, args ...interface{}) {
+			trace.Logf(ctx, "in", format, args...)
+		}
+
 		var resp struct {
 			Result json.RawMessage `json:"result"`
 			Error  *Error          `json:"error"`
@@ -254,15 +284,19 @@ func (c *Client) in() {
 			Method string          `json:"method"`
 			Params json.RawMessage `json:"params"`
 		}
+		log("reading websocket")
 		err := c.ws.ReadJSON(&resp)
 		if err != nil {
 			c.setErr(err)
 			return
 		}
+		log("finished websocket read")
+
 		// Zero IDs are never used by requests
 		if resp.Method != "" && resp.Result == nil && resp.Error == nil && resp.ID == 0 {
 			// it's a notification
 			if c.notify != nil {
+				log("handling notification %v", resp.Method)
 				go func(block, unblockNext chan struct{}) {
 					select {
 					case <-c.errc:
@@ -300,6 +334,9 @@ func (c *Client) in() {
 // passed through args.  Result should point to an object to unmarshal the
 // result, or equal nil to discard the result.
 func (c *Client) Call(ctx context.Context, method string, result interface{}, args ...interface{}) (err error) {
+	ctx, task := trace.NewTask(ctx, method)
+	defer task.End()
+
 	defer func() {
 		if e := ctx.Err(); e != nil {
 			err = e
@@ -332,8 +369,11 @@ func (c *Client) Call(ctx context.Context, method string, result interface{}, ar
 		ID:      id,
 	}
 	c.writing.Lock()
-	c.ws.SetWriteDeadline(time.Now().Add(writeWait))
+	writeDeadline := time.Now().Add(writeWait)
+	trace.Logf(ctx, "", "setting write deadline %v", writeDeadline)
+	c.ws.SetWriteDeadline(writeDeadline)
 	err = c.ws.WriteJSON(request)
+	trace.Logf(ctx, "", "wrote request")
 	c.writing.Unlock()
 	if err != nil {
 		return err
