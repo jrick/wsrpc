@@ -22,6 +22,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"runtime/trace"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -65,6 +66,15 @@ type call struct {
 	err    chan error
 }
 
+type request struct {
+	JSONRPC string        `json:"jsonrpc"`
+	Method  string        `json:"method"`
+	Params  []interface{} `json:"params,omitempty"`
+	ID      uint32        `json:"id"`
+
+	ctx context.Context
+}
+
 // Client implements JSON-RPC calls and notifications over a websocket.
 type Client struct {
 	atomicSeq  uint32
@@ -75,7 +85,7 @@ type Client struct {
 	notify     Notifier
 	calls      map[uint32]*call
 	callMu     sync.Mutex
-	writing    sync.Mutex
+	send       chan *request
 	errMu      sync.Mutex    // synchronizes writes to err before errc is closed
 	errc       chan struct{} // closed after err is set
 	err        error
@@ -144,9 +154,20 @@ func WithPingPeriod(period time.Duration) Option {
 	}
 }
 
+// WithoutPongDeadline disables any default or custom pong deadline.
+// Pings will still be written every ping period unless disabled.
+// This option is reset by later WithPingPeriod options.
+func WithoutPongDeadline() Option {
+	return func(o *options) {
+		o.pongWait = 0
+	}
+}
+
 // Dial establishes an RPC client connection to the server described by addr.
 // Addr must be the URL of the websocket, e.g., "wss://[::1]:9109/ws".
 func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
+	ctx, task := trace.NewTask(ctx, "Dial")
+	defer task.End()
 	var o options
 	o.pingPeriod = 60 * time.Second
 	o.pongWait = 10 * o.pingPeriod / 9
@@ -169,19 +190,32 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 		pingPeriod: o.pingPeriod,
 		notify:     o.notify,
 		calls:      make(map[uint32]*call),
+		send:       make(chan *request),
 		errc:       make(chan struct{}),
 	}
+	var pingTicker *time.Ticker
 	if o.pingPeriod != 0 {
 		ws.SetPongHandler(func(string) error {
-			ws.SetReadDeadline(time.Now().Add(c.pongWait))
+			defer trace.StartRegion(ctx, "PongHandler").End()
+			trace.Logf(ctx, "", "received pong")
+			if c.pongWait != 0 {
+				readDeadline := time.Now().Add(c.pongWait)
+				trace.Logf(ctx, "", "setting new read deadline %v", readDeadline)
+				ws.SetReadDeadline(readDeadline)
+			}
 			return nil
 		})
 		// Initial read deadline must be set for the first ping message
 		// sent pingPeriod from now.
-		ws.SetReadDeadline(time.Now().Add(c.pingPeriod + c.pongWait))
-		go c.ping()
+		if c.pongWait != 0 {
+			readDeadline := time.Now().Add(c.pingPeriod + c.pongWait)
+			trace.Logf(ctx, "", "setting first read deadline %v", readDeadline)
+			ws.SetReadDeadline(readDeadline)
+		}
+		pingTicker = time.NewTicker(c.pingPeriod)
 	}
-	go c.in()
+	go c.in(ctx)
+	go c.out(ctx, pingTicker)
 	return c, nil
 }
 
@@ -193,8 +227,8 @@ func (c *Client) String() string {
 // Close sends a websocket close control message and closes the underlying
 // network connection.
 func (c *Client) Close() error {
-	defer c.writing.Unlock()
-	c.writing.Lock()
+	// WriteControl and Close may be called concurrently with all other
+	// websocket methods.
 	msg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")
 	writeErr := c.ws.WriteControl(websocket.CloseMessage, msg, time.Now().Add(writeWait))
 	closeErr := c.ws.Close()
@@ -204,9 +238,10 @@ func (c *Client) Close() error {
 	return closeErr
 }
 
-func (c *Client) setErr(err error) {
+func (c *Client) setErr(ctx context.Context, err error) {
 	c.errMu.Lock()
 	if c.err == nil {
+		trace.Logf(ctx, "error", "%v", err)
 		c.err = err
 		close(c.errc)
 		if closer, ok := c.notify.(io.Closer); ok {
@@ -216,30 +251,69 @@ func (c *Client) setErr(err error) {
 	c.errMu.Unlock()
 }
 
-func (c *Client) ping() {
-	ticker := time.NewTicker(c.pingPeriod)
-	defer func() {
-		ticker.Stop()
-		c.ws.Close()
-	}()
+func (c *Client) out(ctx context.Context, pingTicker *time.Ticker) {
+	ctx, task := trace.NewTask(ctx, "wsrpc.Client.out")
+	defer task.End()
+
+	defer c.ws.Close()
+
+	var pingChan <-chan time.Time
+	if pingTicker != nil {
+		pingChan = pingTicker.C
+		defer pingTicker.Stop()
+	}
+
 	for {
+		// Give pings priority
+		select {
+		case <-pingChan:
+			c.ping(ctx)
+			continue
+		default:
+		}
+
 		select {
 		case <-c.Done():
 			return
-		case <-ticker.C:
-			c.writing.Lock()
-			c.ws.SetWriteDeadline(time.Now().Add(writeWait))
-			err := c.ws.WriteMessage(websocket.PingMessage, nil)
-			c.writing.Unlock()
+		case <-pingChan:
+			c.ping(ctx)
+			continue
+		case request := <-c.send:
+			writeDeadline := time.Now().Add(writeWait)
+			trace.Logf(request.ctx, "", "setting write deadline %v", writeDeadline)
+			c.ws.SetWriteDeadline(writeDeadline)
+			err := c.ws.WriteJSON(request)
+			trace.Logf(request.ctx, "", "wrote request")
 			if err != nil {
-				c.setErr(err)
+				c.setErr(ctx, err)
 				return
 			}
 		}
 	}
 }
 
-func (c *Client) in() {
+func (c *Client) ping(ctx context.Context) {
+	ctx, task := trace.NewTask(ctx, "ping")
+	defer task.End()
+
+	writeDeadline := time.Now().Add(writeWait)
+	trace.Logf(ctx, "", "setting write deadline %v", writeDeadline)
+	c.ws.SetWriteDeadline(writeDeadline)
+	trace.Logf(ctx, "", "sending ping message")
+	err := c.ws.WriteMessage(websocket.PingMessage, nil)
+	if err != nil {
+		trace.Logf(ctx, "", "writing ping failed: %v", err)
+		c.setErr(ctx, err)
+	}
+}
+
+func (c *Client) in(ctx context.Context) {
+	ctx, task := trace.NewTask(ctx, "wsrpc.Client.in")
+	defer task.End()
+	tracelog := func(format string, args ...interface{}) {
+		trace.Logf(ctx, "in", format, args...)
+	}
+
 	// pair of channel vars retains notification processing order
 	block, unblockNext := make(chan struct{}), make(chan struct{})
 	close(block)
@@ -254,24 +328,30 @@ func (c *Client) in() {
 			Method string          `json:"method"`
 			Params json.RawMessage `json:"params"`
 		}
+		tracelog("reading websocket")
 		err := c.ws.ReadJSON(&resp)
 		if err != nil {
-			c.setErr(err)
+			tracelog("websocket read failed: %v", err)
+			c.setErr(ctx, err)
 			return
 		}
+		tracelog("finished websocket read")
+
 		// Zero IDs are never used by requests
 		if resp.Method != "" && resp.Result == nil && resp.Error == nil && resp.ID == 0 {
 			// it's a notification
 			if c.notify != nil {
+				tracelog("queueing notifier for method %q", resp.Method)
 				go func(block, unblockNext chan struct{}) {
 					select {
 					case <-c.errc:
 						return
 					case <-block:
 					}
+					tracelog("running notifier for method %q", resp.Method)
 					err := c.notify.Notify(resp.Method, resp.Params)
 					if err != nil {
-						c.setErr(err)
+						c.setErr(ctx, err)
 						c.ws.Close()
 					}
 					close(unblockNext)
@@ -284,7 +364,8 @@ func (c *Client) in() {
 		call, ok := c.calls[resp.ID]
 		c.callMu.Unlock()
 		if !ok {
-			c.setErr(errors.New("wsrpc: unknown response ID"))
+			tracelog("unknown response ID")
+			c.setErr(ctx, errors.New("wsrpc: unknown response ID"))
 			return
 		}
 		if resp.Error != nil {
@@ -300,6 +381,9 @@ func (c *Client) in() {
 // passed through args.  Result should point to an object to unmarshal the
 // result, or equal nil to discard the result.
 func (c *Client) Call(ctx context.Context, method string, result interface{}, args ...interface{}) (err error) {
+	ctx, task := trace.NewTask(ctx, method)
+	defer task.End()
+
 	defer func() {
 		if e := ctx.Err(); e != nil {
 			err = e
@@ -320,23 +404,19 @@ func (c *Client) Call(ctx context.Context, method string, result interface{}, ar
 	c.calls[id] = call
 	c.callMu.Unlock()
 
-	request := &struct {
-		JSONRPC string        `json:"jsonrpc"`
-		Method  string        `json:"method"`
-		Params  []interface{} `json:"params,omitempty"`
-		ID      uint32        `json:"id"`
-	}{
+	req := &request{
 		JSONRPC: "2.0",
 		Method:  method,
 		Params:  args,
 		ID:      id,
+		ctx:     ctx,
 	}
-	c.writing.Lock()
-	c.ws.SetWriteDeadline(time.Now().Add(writeWait))
-	err = c.ws.WriteJSON(request)
-	c.writing.Unlock()
-	if err != nil {
-		return err
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.errc:
+		return c.err
+	case c.send <- req:
 	}
 
 	select {
