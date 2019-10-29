@@ -148,6 +148,8 @@ func WithPingPeriod(period time.Duration) Option {
 // Dial establishes an RPC client connection to the server described by addr.
 // Addr must be the URL of the websocket, e.g., "wss://[::1]:9109/ws".
 func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
+	ctx, task := trace.NewTask(ctx, "Dial")
+	defer task.End()
 	var o options
 	o.pingPeriod = 60 * time.Second
 	o.pongWait = 10 * o.pingPeriod / 9
@@ -174,6 +176,7 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 	}
 	if o.pingPeriod != 0 {
 		ws.SetPongHandler(func(string) error {
+			defer trace.StartRegion(ctx, "PongHandler").End()
 			readDeadline := time.Now().Add(c.pongWait)
 			trace.Logf(ctx, "", "received pong; setting new read deadline %v", readDeadline)
 			ws.SetReadDeadline(readDeadline)
