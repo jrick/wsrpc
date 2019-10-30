@@ -66,6 +66,15 @@ type call struct {
 	err    chan error
 }
 
+type request struct {
+	JSONRPC string        `json:"jsonrpc"`
+	Method  string        `json:"method"`
+	Params  []interface{} `json:"params,omitempty"`
+	ID      uint32        `json:"id"`
+
+	ctx context.Context
+}
+
 // Client implements JSON-RPC calls and notifications over a websocket.
 type Client struct {
 	atomicSeq  uint32
@@ -76,7 +85,7 @@ type Client struct {
 	notify     Notifier
 	calls      map[uint32]*call
 	callMu     sync.Mutex
-	writing    priorityMutex
+	send       chan *request
 	errMu      sync.Mutex    // synchronizes writes to err before errc is closed
 	errc       chan struct{} // closed after err is set
 	err        error
@@ -172,6 +181,7 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 		pingPeriod: o.pingPeriod,
 		notify:     o.notify,
 		calls:      make(map[uint32]*call),
+		send:       make(chan *request),
 		errc:       make(chan struct{}),
 	}
 	if o.pingPeriod != 0 {
@@ -187,9 +197,9 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 		readDeadline := time.Now().Add(c.pingPeriod + c.pongWait)
 		trace.Logf(ctx, "", "setting first read deadline %v", readDeadline)
 		ws.SetReadDeadline(readDeadline)
-		go c.ping(ctx)
 	}
 	go c.in(ctx)
+	go c.out(ctx)
 	return c, nil
 }
 
@@ -201,8 +211,8 @@ func (c *Client) String() string {
 // Close sends a websocket close control message and closes the underlying
 // network connection.
 func (c *Client) Close() error {
-	defer c.writing.UnlockHi()
-	c.writing.LockHi()
+	// WriteControl and Close may be called concurrently with all other
+	// websocket methods.
 	msg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")
 	writeErr := c.ws.WriteControl(websocket.CloseMessage, msg, time.Now().Add(writeWait))
 	closeErr := c.ws.Close()
@@ -224,35 +234,57 @@ func (c *Client) setErr(err error) {
 	c.errMu.Unlock()
 }
 
-func (c *Client) ping(ctx context.Context) {
-	ticker := time.NewTicker(c.pingPeriod)
-	defer func() {
-		ticker.Stop()
-		c.ws.Close()
-	}()
+func (c *Client) out(ctx context.Context) {
+	defer c.ws.Close()
+
+	var pingTicker <-chan time.Time
+	if c.pingPeriod != 0 {
+		ticker := time.NewTicker(c.pingPeriod)
+		pingTicker = ticker.C
+		defer ticker.Stop()
+	}
+
 	for {
+		// Give pings priority
+		select {
+		case <-pingTicker:
+			c.ping(ctx)
+			continue
+		default:
+		}
+
 		select {
 		case <-c.Done():
 			return
-		case <-ticker.C:
-			ctx, task := trace.NewTask(ctx, "pinging")
-			c.writing.LockHi()
-			trace.Logf(ctx, "", "acquired write mutex")
+		case <-pingTicker:
+			c.ping(ctx)
+			continue
+		case request := <-c.send:
 			writeDeadline := time.Now().Add(writeWait)
-			trace.Logf(ctx, "", "setting write deadline %v", writeDeadline)
+			trace.Logf(request.ctx, "", "setting write deadline %v", writeDeadline)
 			c.ws.SetWriteDeadline(writeDeadline)
-			trace.Logf(ctx, "", "sending ping message")
-			err := c.ws.WriteMessage(websocket.PingMessage, nil)
-			c.writing.UnlockHi()
-			if err != nil {
-				trace.Logf(ctx, "", "writing ping failed: %v", err)
-			}
-			task.End()
+			err := c.ws.WriteJSON(request)
+			trace.Logf(request.ctx, "", "wrote request")
 			if err != nil {
 				c.setErr(err)
 				return
 			}
 		}
+	}
+}
+
+func (c *Client) ping(ctx context.Context) {
+	ctx, task := trace.NewTask(ctx, "ping")
+	defer task.End()
+
+	writeDeadline := time.Now().Add(writeWait)
+	trace.Logf(ctx, "", "setting write deadline %v", writeDeadline)
+	c.ws.SetWriteDeadline(writeDeadline)
+	trace.Logf(ctx, "", "sending ping message")
+	err := c.ws.WriteMessage(websocket.PingMessage, nil)
+	if err != nil {
+		trace.Logf(ctx, "", "writing ping failed: %v", err)
+		c.setErr(err)
 	}
 }
 
@@ -360,26 +392,12 @@ func (c *Client) Call(ctx context.Context, method string, result interface{}, ar
 	c.calls[id] = call
 	c.callMu.Unlock()
 
-	request := &struct {
-		JSONRPC string        `json:"jsonrpc"`
-		Method  string        `json:"method"`
-		Params  []interface{} `json:"params,omitempty"`
-		ID      uint32        `json:"id"`
-	}{
+	c.send <- &request{
 		JSONRPC: "2.0",
 		Method:  method,
 		Params:  args,
 		ID:      id,
-	}
-	c.writing.LockLo()
-	writeDeadline := time.Now().Add(writeWait)
-	trace.Logf(ctx, "", "setting write deadline %v", writeDeadline)
-	c.ws.SetWriteDeadline(writeDeadline)
-	err = c.ws.WriteJSON(request)
-	trace.Logf(ctx, "", "wrote request")
-	c.writing.UnlockLo()
-	if err != nil {
-		return err
+		ctx:     ctx,
 	}
 
 	select {
