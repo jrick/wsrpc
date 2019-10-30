@@ -392,12 +392,19 @@ func (c *Client) Call(ctx context.Context, method string, result interface{}, ar
 	c.calls[id] = call
 	c.callMu.Unlock()
 
-	c.send <- &request{
+	req := &request{
 		JSONRPC: "2.0",
 		Method:  method,
 		Params:  args,
 		ID:      id,
 		ctx:     ctx,
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.errc:
+		return c.err
+	case c.send <- req:
 	}
 
 	select {
