@@ -76,7 +76,7 @@ type Client struct {
 	notify     Notifier
 	calls      map[uint32]*call
 	callMu     sync.Mutex
-	writing    sync.Mutex
+	writing    priorityMutex
 	errMu      sync.Mutex    // synchronizes writes to err before errc is closed
 	errc       chan struct{} // closed after err is set
 	err        error
@@ -185,7 +185,7 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 		// Initial read deadline must be set for the first ping message
 		// sent pingPeriod from now.
 		readDeadline := time.Now().Add(c.pingPeriod + c.pongWait)
-		trace.Logf(ctx, "", "received pong; setting first read deadline %v", readDeadline)
+		trace.Logf(ctx, "", "setting first read deadline %v", readDeadline)
 		ws.SetReadDeadline(readDeadline)
 		go c.ping(ctx)
 	}
@@ -201,8 +201,8 @@ func (c *Client) String() string {
 // Close sends a websocket close control message and closes the underlying
 // network connection.
 func (c *Client) Close() error {
-	defer c.writing.Unlock()
-	c.writing.Lock()
+	defer c.writing.UnlockHi()
+	c.writing.LockHi()
 	msg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")
 	writeErr := c.ws.WriteControl(websocket.CloseMessage, msg, time.Now().Add(writeWait))
 	closeErr := c.ws.Close()
@@ -236,14 +236,14 @@ func (c *Client) ping(ctx context.Context) {
 			return
 		case <-ticker.C:
 			ctx, task := trace.NewTask(ctx, "pinging")
-			c.writing.Lock()
+			c.writing.LockHi()
 			trace.Logf(ctx, "", "acquired write mutex")
 			writeDeadline := time.Now().Add(writeWait)
 			trace.Logf(ctx, "", "setting write deadline %v", writeDeadline)
 			c.ws.SetWriteDeadline(writeDeadline)
 			trace.Logf(ctx, "", "sending ping message")
 			err := c.ws.WriteMessage(websocket.PingMessage, nil)
-			c.writing.Unlock()
+			c.writing.UnlockHi()
 			if err != nil {
 				trace.Logf(ctx, "", "writing ping failed: %v", err)
 			}
@@ -371,13 +371,13 @@ func (c *Client) Call(ctx context.Context, method string, result interface{}, ar
 		Params:  args,
 		ID:      id,
 	}
-	c.writing.Lock()
+	c.writing.LockLo()
 	writeDeadline := time.Now().Add(writeWait)
 	trace.Logf(ctx, "", "setting write deadline %v", writeDeadline)
 	c.ws.SetWriteDeadline(writeDeadline)
 	err = c.ws.WriteJSON(request)
 	trace.Logf(ctx, "", "wrote request")
-	c.writing.Unlock()
+	c.writing.UnlockLo()
 	if err != nil {
 		return err
 	}
