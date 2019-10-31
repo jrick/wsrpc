@@ -186,17 +186,16 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 	}
 	var pingTicker *time.Ticker
 	if o.pingPeriod != 0 {
-		now := time.Now()
 		ws.SetPongHandler(func(string) error {
 			defer trace.StartRegion(ctx, "PongHandler").End()
-			readDeadline := now.Add(c.pongWait)
+			readDeadline := time.Now().Add(c.pongWait)
 			trace.Logf(ctx, "", "received pong; setting new read deadline %v", readDeadline)
 			ws.SetReadDeadline(readDeadline)
 			return nil
 		})
 		// Initial read deadline must be set for the first ping message
 		// sent pingPeriod from now.
-		readDeadline := now.Add(c.pingPeriod + c.pongWait)
+		readDeadline := time.Now().Add(c.pingPeriod + c.pongWait)
 		trace.Logf(ctx, "", "setting first read deadline %v", readDeadline)
 		ws.SetReadDeadline(readDeadline)
 		pingTicker = time.NewTicker(c.pingPeriod)
