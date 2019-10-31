@@ -335,10 +335,8 @@ func (c *Client) ping(ctx context.Context) {
 	defer task.End()
 
 	writeDeadline := time.Now().Add(writeWait)
-	trace.Logf(ctx, "", "setting write deadline %v", writeDeadline)
-	c.ws.SetWriteDeadline(writeDeadline)
-	trace.Logf(ctx, "", "sending ping message")
-	err := c.ws.WriteMessage(websocket.PingMessage, nil)
+	trace.Logf(ctx, "", "sending ping message with deadline %v", writeDeadline)
+	err := c.ws.WriteControl(websocket.PingMessage, nil, writeDeadline)
 	if err != nil {
 		trace.Logf(ctx, "", "writing ping failed: %v", err)
 		c.setErr(ctx, err)
