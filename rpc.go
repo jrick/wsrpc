@@ -184,22 +184,25 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 		send:       make(chan *request),
 		errc:       make(chan struct{}),
 	}
+	var pingTicker *time.Ticker
 	if o.pingPeriod != 0 {
+		now := time.Now()
 		ws.SetPongHandler(func(string) error {
 			defer trace.StartRegion(ctx, "PongHandler").End()
-			readDeadline := time.Now().Add(c.pongWait)
+			readDeadline := now.Add(c.pongWait)
 			trace.Logf(ctx, "", "received pong; setting new read deadline %v", readDeadline)
 			ws.SetReadDeadline(readDeadline)
 			return nil
 		})
 		// Initial read deadline must be set for the first ping message
 		// sent pingPeriod from now.
-		readDeadline := time.Now().Add(c.pingPeriod + c.pongWait)
+		readDeadline := now.Add(c.pingPeriod + c.pongWait)
 		trace.Logf(ctx, "", "setting first read deadline %v", readDeadline)
 		ws.SetReadDeadline(readDeadline)
+		pingTicker = time.NewTicker(c.pingPeriod)
 	}
 	go c.in(ctx)
-	go c.out(ctx)
+	go c.out(ctx, pingTicker)
 	return c, nil
 }
 
@@ -235,23 +238,22 @@ func (c *Client) setErr(ctx context.Context, err error) {
 	c.errMu.Unlock()
 }
 
-func (c *Client) out(ctx context.Context) {
+func (c *Client) out(ctx context.Context, pingTicker *time.Ticker) {
 	ctx, task := trace.NewTask(ctx, "wsrpc.Client.out")
 	defer task.End()
 
 	defer c.ws.Close()
 
-	var pingTicker <-chan time.Time
-	if c.pingPeriod != 0 {
-		ticker := time.NewTicker(c.pingPeriod)
-		pingTicker = ticker.C
-		defer ticker.Stop()
+	var pingChan <-chan time.Time
+	if pingTicker != nil {
+		pingChan = pingTicker.C
+		defer pingTicker.Stop()
 	}
 
 	for {
 		// Give pings priority
 		select {
-		case <-pingTicker:
+		case <-pingChan:
 			c.ping(ctx)
 			continue
 		default:
@@ -260,7 +262,7 @@ func (c *Client) out(ctx context.Context) {
 		select {
 		case <-c.Done():
 			return
-		case <-pingTicker:
+		case <-pingChan:
 			c.ping(ctx)
 			continue
 		case request := <-c.send:
