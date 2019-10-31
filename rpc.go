@@ -228,8 +228,8 @@ func (c *Client) ping() {
 			return
 		case <-ticker.C:
 			c.writing.Lock()
-			c.ws.SetWriteDeadline(time.Now().Add(writeWait))
-			err := c.ws.WriteMessage(websocket.PingMessage, nil)
+			err := c.ws.WriteControl(websocket.PingMessage, nil,
+				time.Now().Add(writeWait))
 			c.writing.Unlock()
 			if err != nil {
 				c.setErr(err)
