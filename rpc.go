@@ -222,9 +222,10 @@ func (c *Client) Close() error {
 	return closeErr
 }
 
-func (c *Client) setErr(err error) {
+func (c *Client) setErr(ctx context.Context, err error) {
 	c.errMu.Lock()
 	if c.err == nil {
+		trace.Logf(ctx, "error", "%v", err)
 		c.err = err
 		close(c.errc)
 		if closer, ok := c.notify.(io.Closer); ok {
@@ -235,6 +236,9 @@ func (c *Client) setErr(err error) {
 }
 
 func (c *Client) out(ctx context.Context) {
+	ctx, task := trace.NewTask(ctx, "wsrpc.Client.out")
+	defer task.End()
+
 	defer c.ws.Close()
 
 	var pingTicker <-chan time.Time
@@ -266,7 +270,7 @@ func (c *Client) out(ctx context.Context) {
 			err := c.ws.WriteJSON(request)
 			trace.Logf(request.ctx, "", "wrote request")
 			if err != nil {
-				c.setErr(err)
+				c.setErr(ctx, err)
 				return
 			}
 		}
@@ -284,32 +288,22 @@ func (c *Client) ping(ctx context.Context) {
 	err := c.ws.WriteMessage(websocket.PingMessage, nil)
 	if err != nil {
 		trace.Logf(ctx, "", "writing ping failed: %v", err)
-		c.setErr(err)
+		c.setErr(ctx, err)
 	}
 }
 
 func (c *Client) in(ctx context.Context) {
+	ctx, task := trace.NewTask(ctx, "wsrpc.Client.in")
+	defer task.End()
+	tracelog := func(format string, args ...interface{}) {
+		trace.Logf(ctx, "in", format, args...)
+	}
+
 	// pair of channel vars retains notification processing order
 	block, unblockNext := make(chan struct{}), make(chan struct{})
 	close(block)
 
-	var task *trace.Task
-	defer func() {
-		if task != nil {
-			task.End()
-		}
-	}()
 	for {
-		// End previous task (if any) and begin a new one to handle a
-		// JSON-RPC response or notification.
-		if task != nil {
-			task.End()
-		}
-		ctx, task = trace.NewTask(ctx, "in")
-		log := func(format string, args ...interface{}) {
-			trace.Logf(ctx, "in", format, args...)
-		}
-
 		var resp struct {
 			Result json.RawMessage `json:"result"`
 			Error  *Error          `json:"error"`
@@ -319,28 +313,30 @@ func (c *Client) in(ctx context.Context) {
 			Method string          `json:"method"`
 			Params json.RawMessage `json:"params"`
 		}
-		log("reading websocket")
+		tracelog("reading websocket")
 		err := c.ws.ReadJSON(&resp)
 		if err != nil {
-			c.setErr(err)
+			tracelog("websocket read failed: %v", err)
+			c.setErr(ctx, err)
 			return
 		}
-		log("finished websocket read")
+		tracelog("finished websocket read")
 
 		// Zero IDs are never used by requests
 		if resp.Method != "" && resp.Result == nil && resp.Error == nil && resp.ID == 0 {
 			// it's a notification
 			if c.notify != nil {
-				log("handling notification %v", resp.Method)
+				tracelog("queueing notifier for method %q", resp.Method)
 				go func(block, unblockNext chan struct{}) {
 					select {
 					case <-c.errc:
 						return
 					case <-block:
 					}
+					tracelog("running notifier for method %q", resp.Method)
 					err := c.notify.Notify(resp.Method, resp.Params)
 					if err != nil {
-						c.setErr(err)
+						c.setErr(ctx, err)
 						c.ws.Close()
 					}
 					close(unblockNext)
@@ -353,7 +349,8 @@ func (c *Client) in(ctx context.Context) {
 		call, ok := c.calls[resp.ID]
 		c.callMu.Unlock()
 		if !ok {
-			c.setErr(errors.New("wsrpc: unknown response ID"))
+			tracelog("unknown response ID")
+			c.setErr(ctx, errors.New("wsrpc: unknown response ID"))
 			return
 		}
 		if resp.Error != nil {
