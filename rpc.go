@@ -154,6 +154,15 @@ func WithPingPeriod(period time.Duration) Option {
 	}
 }
 
+// WithoutPongDeadline disables any default or custom pong deadline.
+// Pings will still be written every ping period unless disabled.
+// This option is reset by later WithPingPeriod options.
+func WithoutPongDeadline() Option {
+	return func(o *options) {
+		o.pongWait = 0
+	}
+}
+
 // Dial establishes an RPC client connection to the server described by addr.
 // Addr must be the URL of the websocket, e.g., "wss://[::1]:9109/ws".
 func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
@@ -188,16 +197,21 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 	if o.pingPeriod != 0 {
 		ws.SetPongHandler(func(string) error {
 			defer trace.StartRegion(ctx, "PongHandler").End()
-			readDeadline := time.Now().Add(c.pongWait)
-			trace.Logf(ctx, "", "received pong; setting new read deadline %v", readDeadline)
-			ws.SetReadDeadline(readDeadline)
+			trace.Logf(ctx, "", "received pong")
+			if c.pongWait != 0 {
+				readDeadline := time.Now().Add(c.pongWait)
+				trace.Logf(ctx, "", "setting new read deadline %v", readDeadline)
+				ws.SetReadDeadline(readDeadline)
+			}
 			return nil
 		})
 		// Initial read deadline must be set for the first ping message
 		// sent pingPeriod from now.
-		readDeadline := time.Now().Add(c.pingPeriod + c.pongWait)
-		trace.Logf(ctx, "", "setting first read deadline %v", readDeadline)
-		ws.SetReadDeadline(readDeadline)
+		if c.pongWait != 0 {
+			readDeadline := time.Now().Add(c.pingPeriod + c.pongWait)
+			trace.Logf(ctx, "", "setting first read deadline %v", readDeadline)
+			ws.SetReadDeadline(readDeadline)
+		}
 		pingTicker = time.NewTicker(c.pingPeriod)
 	}
 	go c.in(ctx)
