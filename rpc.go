@@ -480,6 +480,9 @@ func (c *Client) Go(ctx context.Context, method string, result interface{}, done
 		call.err = c.err
 	}
 	if call.err != nil {
+		c.callMu.Lock()
+		delete(c.calls, id)
+		c.callMu.Unlock()
 		call.finalize()
 	}
 	return call
