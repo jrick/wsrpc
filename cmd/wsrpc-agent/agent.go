@@ -53,15 +53,6 @@ func main() {
 	}
 	flag.Parse()
 
-	if runtime.GOOS == "linux" {
-		var username string
-		if u, err := user.Current(); err == nil {
-			username = u.Username
-		}
-		log.Printf("Warning: Linux exposes environment variables via /proc "+
-			"and "+authEnv+" is readable by user %v", username)
-	}
-
 	if os.Getenv(sockEnv) != "" {
 		log.Fatal(sockEnv + " is set")
 	}
