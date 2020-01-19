@@ -410,8 +410,8 @@ func (c *Client) in(ctx context.Context) {
 		switch {
 		case resp.Error != nil:
 			err = resp.Error
-		case call.Result != nil:
-			err = json.NewDecoder(bytes.NewReader(resp.Result)).Decode(call.Result)
+		case call.result != nil:
+			err = json.NewDecoder(bytes.NewReader(resp.Result)).Decode(call.result)
 		}
 		call.err = err
 		call.finalize()
