@@ -61,9 +61,36 @@ type Notifier interface {
 }
 
 type call struct {
-	method string
+	finalized uint32 //atomic
+
 	result interface{}
-	err    chan error
+	err    error
+	done   chan Call
+}
+
+func (c *call) finalize() {
+	atomic.StoreUint32(&c.finalized, 1)
+	c.done <- c
+}
+
+func (c *call) Result() (interface{}, error) {
+	if atomic.LoadUint32(&c.finalized) != 1 {
+		panic("wsrpc: Result called before RPC completed")
+	}
+	return c.result, c.err
+}
+
+func (c *call) Done() chan Call { return c.done }
+
+// Call represents a JSON-RPC method invocation.  Result returns the provided
+// return result and any error occuring during the call.
+//
+// Result must only be called after the call has completed.  Completion is
+// signaled by the call being sent over the channel returned by Done.
+// Implementations are allowed to panic when Result is called before this.
+type Call interface {
+	Result() (interface{}, error)
+	Done() chan Call
 }
 
 type request struct {
@@ -239,8 +266,10 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) setErr(ctx context.Context, err error) {
+	var closed bool
 	c.errMu.Lock()
 	if c.err == nil {
+		closed = true
 		trace.Logf(ctx, "error", "%v", err)
 		c.err = err
 		close(c.errc)
@@ -249,6 +278,15 @@ func (c *Client) setErr(ctx context.Context, err error) {
 		}
 	}
 	c.errMu.Unlock()
+	if closed {
+		c.callMu.Lock()
+		defer c.callMu.Unlock()
+		for _, c := range c.calls {
+			c.err = err
+			c.finalize()
+		}
+		c.calls = nil
+	}
 }
 
 func (c *Client) out(ctx context.Context, pingTicker *time.Ticker) {
@@ -362,18 +400,21 @@ func (c *Client) in(ctx context.Context) {
 		}
 		c.callMu.Lock()
 		call, ok := c.calls[resp.ID]
+		delete(c.calls, resp.ID)
 		c.callMu.Unlock()
 		if !ok {
 			tracelog("unknown response ID")
 			c.setErr(ctx, errors.New("wsrpc: unknown response ID"))
 			return
 		}
-		if resp.Error != nil {
+		switch {
+		case resp.Error != nil:
 			err = resp.Error
-		} else if call.result != nil {
-			err = json.NewDecoder(bytes.NewReader(resp.Result)).Decode(call.result)
+		case call.Result != nil:
+			err = json.NewDecoder(bytes.NewReader(resp.Result)).Decode(call.Result)
 		}
-		call.err <- err
+		call.err = err
+		call.finalize()
 	}
 }
 
@@ -390,15 +431,35 @@ func (c *Client) Call(ctx context.Context, method string, result interface{}, ar
 		}
 	}()
 
+	call := c.Go(ctx, method, result, make(chan Call, 1), args...).(*call)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-call.done:
+		return call.err
+	}
+}
+
+// Go asynchronously calls the JSON-RPC described by method with positional
+// parameters passed through args.  Result should point to an object to
+// unmarshal the result, or equal nil to discard the result.  The done channel
+// will be written with the returned call after completion or error and must be
+// buffered if non-nil.
+func (c *Client) Go(ctx context.Context, method string, result interface{}, done chan Call, args ...interface{}) Call {
+	switch {
+	case done == nil:
+		done = make(chan Call, 1)
+	case cap(done) == 0:
+		panic("wsrpc: done channel is unbuffered")
+	}
+
 	id := atomic.AddUint32(&c.atomicSeq, 1)
 	if id == 0 {
-		// Zero IDs are reserved to indicate missing ID fields in notifications
 		id = atomic.AddUint32(&c.atomicSeq, 1)
 	}
 	call := &call{
-		method: method,
+		done:   done,
 		result: result,
-		err:    make(chan error, 1),
 	}
 	c.callMu.Lock()
 	c.calls[id] = call
@@ -412,21 +473,16 @@ func (c *Client) Call(ctx context.Context, method string, result interface{}, ar
 		ctx:     ctx,
 	}
 	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-c.errc:
-		return c.err
 	case c.send <- req:
-	}
-
-	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		call.err = ctx.Err()
 	case <-c.errc:
-		return c.err
-	case err := <-call.err:
-		return err
+		call.err = c.err
 	}
+	if call.err != nil {
+		call.finalize()
+	}
+	return call
 }
 
 // Done returns a channel that is closed after the client's final error is set.
