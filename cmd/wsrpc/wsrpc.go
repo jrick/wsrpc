@@ -48,7 +48,6 @@ func main() {
 			log.Fatal("parameter must be JSON array")
 		}
 	}
-	ctx := context.Background()
 
 	var tc *tls.Config
 	var pem []byte
@@ -70,7 +69,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		err = runAgent(ctx, conn, auth, &agentArgs{
+		err = runAgent(conn, auth, &agentArgs{
 			Address:  addr,
 			RootCert: string(pem),
 			User:     *userFlag,
@@ -84,6 +83,7 @@ func main() {
 		return
 	}
 
+	ctx := context.Background()
 	c, err := wsrpc.Dial(ctx, addr, wsrpc.WithTLSConfig(tc), wsrpc.WithBasicAuth(*userFlag, *passFlag))
 	if err != nil {
 		log.Fatal(err)
@@ -123,7 +123,7 @@ type agentArgs struct {
 	Params   string
 }
 
-func runAgent(ctx context.Context, conn net.Conn, auth string, args *agentArgs) error {
+func runAgent(conn net.Conn, auth string, args *agentArgs) error {
 	defer conn.Close()
 	enc := json.NewEncoder(conn)
 	if err := enc.Encode(auth); err != nil {
