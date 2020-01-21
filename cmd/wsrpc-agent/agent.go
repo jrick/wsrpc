@@ -194,7 +194,7 @@ func (ag *agent) serve(conn net.Conn) {
 		log.Println(err)
 		return
 	}
-	if string(auth) != ag.auth {
+	if auth != ag.auth {
 		return
 	}
 	var args struct {
