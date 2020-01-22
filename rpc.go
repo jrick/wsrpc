@@ -462,7 +462,14 @@ func (c *Client) Go(ctx context.Context, method string, result interface{}, done
 		result: result,
 	}
 	c.callMu.Lock()
-	c.calls[id] = call
+	if c.calls != nil {
+		c.calls[id] = call
+	} else {
+		c.callMu.Unlock()
+		call.err = c.err
+		call.finalize()
+		return call
+	}
 	c.callMu.Unlock()
 
 	req := &request{
