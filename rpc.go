@@ -83,7 +83,7 @@ func (c *call) Result() (interface{}, error) {
 func (c *call) Done() chan Call { return c.done }
 
 // Call represents a JSON-RPC method invocation.  Result returns the provided
-// return result and any error occuring during the call.
+// return result and any error occurring during the call.
 //
 // Result must only be called after the call has completed.  Completion is
 // signaled by the call being sent over the channel returned by Done.
