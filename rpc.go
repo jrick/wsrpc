@@ -61,7 +61,7 @@ type Notifier interface {
 }
 
 type call struct {
-	finalized uint32 //atomic
+	finalized uint32 // atomic
 
 	result interface{}
 	err    error
@@ -477,17 +477,20 @@ func (c *Client) Go(ctx context.Context, method string, result interface{}, done
 		ID:      id,
 		ctx:     ctx,
 	}
+	var err error
 	select {
 	case c.send <- req:
 	case <-ctx.Done():
-		call.err = ctx.Err()
+		err = ctx.Err()
 	case <-c.errc:
-		call.err = c.err
+		err = c.err
 	}
-	if call.err != nil {
+	if err != nil {
 		c.callMu.Lock()
 		delete(c.calls, id)
 		c.callMu.Unlock()
+		// call was not sent, safe to set and finalize error
+		call.err = err
 		call.finalize()
 	}
 	return call
