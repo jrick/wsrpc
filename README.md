@@ -70,6 +70,29 @@ $ wsrpc wss://dcrd0.i.zettaport.com:9109/ws getblockhash '[324795]'
 "0000000000000000235b1210221d412c428237175dbb0aef202277d1706b9312"
 ```
 
+It is sometimes desirable for `wsrpc-agent` to run at login and stay
+running for the duration of the user's X session.  This can be
+accomplished with the following in a .xsession script:
+
+```
+if [ "$WSRPCAGENT_PID" -a "$(whence wsrpc-agent)" ]; then
+	eval $(wsrpc-agent)
+fi
+
+do_exit() {
+	if [ "$WSRPCAGENT_PID" ]; then
+		kill "$WSRPCAGENT_PID"
+		export WSRPCAGENT_SOCK=
+		export WSRPCAGENT_AUTH=
+		export WSRPCAGENT_PID=
+	fi
+	exit
+}
+
+your_window_manager
+do_exit
+```
+
 ## License
 
 wsrpc is licensed under the permissive
