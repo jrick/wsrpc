@@ -75,7 +75,7 @@ running for the duration of the user's X session.  This can be
 accomplished with the following in a .xsession script:
 
 ```
-if [ "$WSRPCAGENT_PID" -a "$(whence wsrpc-agent)" ]; then
+if [ -z "$WSRPCAGENT_PID" -a "$(whence wsrpc-agent)" ]; then
 	eval $(wsrpc-agent)
 fi
 
