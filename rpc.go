@@ -451,13 +451,18 @@ func (c *Client) Go(ctx context.Context, method string, result interface{}, done
 		panic("wsrpc: done channel is unbuffered")
 	}
 
-	id := atomic.AddUint32(&c.atomicSeq, 1)
-	if id == 0 {
-		id = atomic.AddUint32(&c.atomicSeq, 1)
-	}
 	call := &call{
 		done:   done,
 		result: result,
+	}
+	if ctx.Err() != nil {
+		call.err = ctx.Err()
+		call.finalize()
+		return call
+	}
+	id := atomic.AddUint32(&c.atomicSeq, 1)
+	if id == 0 {
+		id = atomic.AddUint32(&c.atomicSeq, 1)
 	}
 	c.callMu.Lock()
 	if c.calls != nil {
