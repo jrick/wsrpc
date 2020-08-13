@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/jrick/wsrpc/v2"
+	"github.com/jrick/wsrpc/v2/agent"
 )
 
 const sockEnv = "WSRPCAGENT_SOCK"
@@ -63,9 +64,9 @@ func main() {
 		}
 	}
 
-	sock, auth := os.Getenv(sockEnv), os.Getenv(authEnv)
-	if sock != "" || auth != "" {
-		conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: sock, Net: "unix"})
+	if agent.EnvironmentSet() {
+		auth := os.Getenv(authEnv)
+		conn, err := agent.Dial()
 		if err != nil {
 			log.Fatal(err)
 		}
