@@ -1,10 +1,11 @@
 wsrpc
 =====
 
-Module `github.com/jrick/wsrpc` provides a partial implementation of a JSON-RPC
-2.0 websocket client.  Inspired by net/rpc, clients call methods by their name
-with arguments and return values marshaled by encoding/json.  The client may be
-used to create convenience calls with types specific to an application.
+Module `github.com/jrick/wsrpc/v2` provides a partial implementation of a
+JSON-RPC 2.0 websocket client.  Inspired by net/rpc, clients call methods by
+their name with arguments and return values marshaled by encoding/json.  The
+client may be used to create convenience calls with types specific to an
+application.
 
 Receiving notifications is supported but it is up to the caller to unmarshal the
 JSON-RPC parameters into meaningful data.
