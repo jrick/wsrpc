@@ -12,7 +12,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"os"
@@ -120,16 +119,19 @@ func main() {
 }
 
 func daemon() {
+	err := pledge("stdio rpath wpath cpath inet fattr unix dns unveil")
+	if err != nil {
+		log.Fatalf("pledge: %v", err)
+	}
+
 	log.SetPrefix("wsrpc-agent: ")
 
-	authBytes := make([]byte, 32)
-	_, err := rand.Read(authBytes)
+	err = unveil("/tmp", "rwc")
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("unveil: %v", err)
 	}
-	auth := base64.StdEncoding.EncodeToString(authBytes)
 
-	tmpDir, err := ioutil.TempDir("", "wsrpc")
+	tmpDir, err := os.MkdirTemp("", "wsrpc")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -142,6 +144,34 @@ func daemon() {
 		log.Fatal(err)
 	}
 
+	err = unveil(tmpDir, "c")
+	if err != nil {
+		log.Fatalf("unveil: %v", err)
+	}
+	err = unveil("/tmp", "")
+	if err != nil {
+		log.Fatalf("unveil: %v", err)
+	}
+	err = unveil("/etc/ssl", "r")
+	if err != nil {
+		log.Fatalf("unveil: %v", err)
+	}
+	err = unveilBlock()
+	if err != nil {
+		log.Fatalf("unveil: %v", err)
+	}
+	err = pledge("stdio rpath cpath inet dns")
+	if err != nil {
+		log.Fatalf("pledge: %v", err)
+	}
+
+	authBytes := make([]byte, 32)
+	_, err = rand.Read(authBytes)
+	if err != nil {
+		log.Fatal(err)
+	}
+	auth := base64.StdEncoding.EncodeToString(authBytes)
+
 	// Write auth, socket, and pid to parent.
 	fmt.Println(auth)
 	fmt.Println(lis.Addr())
@@ -151,13 +181,13 @@ func daemon() {
 	// Exit when parent closes stdin if parent is executing command.
 	if len(os.Args) == 3 && os.Args[2] == "-exec" {
 		go func() {
-			io.Copy(ioutil.Discard, os.Stdin)
+			io.Copy(io.Discard, os.Stdin)
+			os.RemoveAll(tmpDir)
 			os.Exit(1)
 		}()
 	}
 
 	ag := agent{
-		tmp:     tmpDir,
 		auth:    auth,
 		lis:     lis,
 		clients: make(map[string]*wsrpc.Client),
@@ -166,7 +196,6 @@ func daemon() {
 }
 
 type agent struct {
-	tmp     string
 	auth    string
 	lis     net.Listener
 	clients map[string]*wsrpc.Client
@@ -174,8 +203,6 @@ type agent struct {
 }
 
 func (ag *agent) listen() {
-	defer os.RemoveAll(ag.tmp)
-
 	for {
 		conn, err := ag.lis.Accept()
 		if err != nil {
