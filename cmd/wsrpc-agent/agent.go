@@ -28,9 +28,11 @@ func init() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 }
 
-const sockEnv = "WSRPCAGENT_SOCK"
-const authEnv = "WSRPCAGENT_AUTH"
-const pidEnv = "WSRPCAGENT_PID"
+const (
+	sockEnv = "WSRPCAGENT_SOCK"
+	authEnv = "WSRPCAGENT_AUTH"
+	pidEnv  = "WSRPCAGENT_PID"
+)
 
 func main() {
 	// Go has no fork/exec (already multithreaded before main), so spawning
@@ -140,7 +142,7 @@ func daemon() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := os.Chmod(sockName, 0600); err != nil {
+	if err := os.Chmod(sockName, 0o600); err != nil {
 		log.Fatal(err)
 	}
 

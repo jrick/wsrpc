@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net"
 	"os"
@@ -16,8 +15,10 @@ import (
 	"github.com/jrick/wsrpc/v2"
 )
 
-const sockEnv = "WSRPCAGENT_SOCK"
-const authEnv = "WSRPCAGENT_AUTH"
+const (
+	sockEnv = "WSRPCAGENT_SOCK"
+	authEnv = "WSRPCAGENT_AUTH"
+)
 
 var (
 	fs       = flag.NewFlagSet("", flag.ExitOnError)
@@ -53,7 +54,7 @@ func main() {
 	var pem []byte
 	if *cFlag != "" {
 		var err error
-		pem, err = ioutil.ReadFile(*cFlag)
+		pem, err = os.ReadFile(*cFlag)
 		if err != nil {
 			log.Fatal(err)
 		}
