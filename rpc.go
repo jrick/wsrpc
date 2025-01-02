@@ -69,9 +69,10 @@ type call struct {
 }
 
 func (c *call) finalize() {
-	if atomic.CompareAndSwapUint32(&c.finalized, 0, 1) {
-		c.done <- c
+	if !atomic.CompareAndSwapUint32(&c.finalized, 0, 1) {
+		panic("wsrpc: double call finalization")
 	}
+	c.done <- c
 }
 
 func (c *call) Result() (interface{}, error) {
