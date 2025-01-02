@@ -498,12 +498,14 @@ func (c *Client) Go(ctx context.Context, method string, result interface{}, done
 		err = c.err
 	}
 	if err != nil {
+		// This may be called concurrently with out() -> setErr(), so
+		// finalize the error under the client mutex to prevent double
+		// finalization.
 		c.callMu.Lock()
 		delete(c.calls, id)
-		c.callMu.Unlock()
-		// call was not sent, safe to set and finalize error
 		call.err = err
 		call.finalize()
+		c.callMu.Unlock()
 	}
 	return call
 }
