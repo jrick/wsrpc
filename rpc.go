@@ -69,8 +69,9 @@ type call struct {
 }
 
 func (c *call) finalize() {
-	atomic.StoreUint32(&c.finalized, 1)
-	c.done <- c
+	if atomic.CompareAndSwapUint32(&c.finalized, 0, 1) {
+		c.done <- c
+	}
 }
 
 func (c *call) Result() (interface{}, error) {
