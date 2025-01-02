@@ -283,6 +283,9 @@ func (c *Client) setErr(ctx context.Context, err error) {
 		c.callMu.Lock()
 		defer c.callMu.Unlock()
 		for _, c := range c.calls {
+			if c.err != nil {
+				continue
+			}
 			c.err = err
 			c.finalize()
 		}
@@ -420,8 +423,10 @@ func (c *Client) in(ctx context.Context) {
 		}
 		// Grab call mutex to avoid racing setting error concurrently with setErr.
 		c.callMu.Lock()
-		call.err = err
-		call.finalize()
+		if call.err == nil {
+			call.err = err
+			call.finalize()
+		}
 		c.callMu.Unlock()
 	}
 }
