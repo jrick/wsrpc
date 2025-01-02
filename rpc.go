@@ -306,7 +306,12 @@ func (c *Client) out(ctx context.Context, pingTicker *time.Ticker) {
 		// Give pings priority
 		select {
 		case <-pingChan:
-			c.ping(ctx)
+			err := c.ping(ctx)
+			if err != nil {
+				trace.Logf(ctx, "out", "writing ping failed: %v", err)
+				c.setErr(ctx, err)
+				return
+			}
 			continue
 		default:
 		}
@@ -315,7 +320,12 @@ func (c *Client) out(ctx context.Context, pingTicker *time.Ticker) {
 		case <-c.Done():
 			return
 		case <-pingChan:
-			c.ping(ctx)
+			err := c.ping(ctx)
+			if err != nil {
+				trace.Logf(ctx, "out", "writing ping failed: %v", err)
+				c.setErr(ctx, err)
+				return
+			}
 			continue
 		case request := <-c.send:
 			writeDeadline := time.Now().Add(writeWait)
@@ -331,17 +341,13 @@ func (c *Client) out(ctx context.Context, pingTicker *time.Ticker) {
 	}
 }
 
-func (c *Client) ping(ctx context.Context) {
+func (c *Client) ping(ctx context.Context) error {
 	ctx, task := trace.NewTask(ctx, "ping")
 	defer task.End()
 
 	writeDeadline := time.Now().Add(writeWait)
 	trace.Logf(ctx, "", "sending ping message with deadline %v", writeDeadline)
-	err := c.ws.WriteControl(websocket.PingMessage, nil, writeDeadline)
-	if err != nil {
-		trace.Logf(ctx, "", "writing ping failed: %v", err)
-		c.setErr(ctx, err)
-	}
+	return c.ws.WriteControl(websocket.PingMessage, nil, writeDeadline)
 }
 
 func (c *Client) in(ctx context.Context) {
