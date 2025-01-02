@@ -418,8 +418,11 @@ func (c *Client) in(ctx context.Context) {
 		case call.result != nil:
 			err = json.NewDecoder(bytes.NewReader(resp.Result)).Decode(call.result)
 		}
+		// Grab call mutex to avoid racing setting error concurrently with setErr.
+		c.callMu.Lock()
 		call.err = err
 		call.finalize()
+		c.callMu.Unlock()
 	}
 }
 
@@ -462,8 +465,9 @@ func (c *Client) Go(ctx context.Context, method string, result interface{}, done
 		done:   done,
 		result: result,
 	}
-	if ctx.Err() != nil {
-		call.err = ctx.Err()
+	if err := ctx.Err(); err != nil {
+		// call was not sent, safe to set and finalize error
+		call.err = err
 		call.finalize()
 		return call
 	}
@@ -476,6 +480,7 @@ func (c *Client) Go(ctx context.Context, method string, result interface{}, done
 		c.calls[id] = call
 	} else {
 		c.callMu.Unlock()
+		// call was not sent, safe to set and finalize error
 		call.err = c.err
 		call.finalize()
 		return call
