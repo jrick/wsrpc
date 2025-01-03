@@ -501,11 +501,16 @@ func (c *Client) Go(ctx context.Context, method string, result interface{}, done
 	if err != nil {
 		// This may be called concurrently with out() -> setErr(), so
 		// finalize the error under the client mutex to prevent double
-		// finalization.
+		// finalization.  Only call finalization if the map and entry
+		// still exists (as setErr() will nil the map it after client
+		// teardown), otherwise we will finalize the call again.
 		c.callMu.Lock()
-		delete(c.calls, id)
-		call.err = err
-		call.finalize()
+		call2, ok := c.calls[id]
+		if ok {
+			delete(c.calls, id)
+			call2.err = err
+			call2.finalize()
+		}
 		c.callMu.Unlock()
 	}
 	return call
