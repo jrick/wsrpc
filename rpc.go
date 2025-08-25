@@ -154,7 +154,8 @@ func WithBasicAuth(user, pass string) Option {
 	}
 }
 
-// WithBearerAuth enables Bearer token authorization.  This method base64-encodes the token.
+// WithBearerAuth enables Bearer token authorization.  This method
+// base64-encodes the token.
 func WithBearerAuth(token []byte) Option {
 	return func(o *options) {
 		if o.header == nil {
