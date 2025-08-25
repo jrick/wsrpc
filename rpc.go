@@ -143,14 +143,35 @@ func WithDial(dial DialFunc) Option {
 	}
 }
 
-// WithBasicAuth enables basic access authentication using the user and
+// WithBasicAuth enables basic access authorization using the user and
 // password.
 func WithBasicAuth(user, pass string) Option {
 	return func(o *options) {
 		if o.header == nil {
 			o.header = make(http.Header)
 		}
-		o.header.Add("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(user+":"+pass)))
+		o.header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(user+":"+pass)))
+	}
+}
+
+// WithBearerAuth enables Bearer token authorization.  This method base64-encodes the token.
+func WithBearerAuth(token []byte) Option {
+	return func(o *options) {
+		if o.header == nil {
+			o.header = make(http.Header)
+		}
+		o.header.Set("Authorization", "Bearer "+base64.StdEncoding.EncodeToString(token))
+	}
+}
+
+// WithBearerAuthString enables Bearer token authorization.  The token must
+// already be base64-encoded.
+func WithBearerAuthString(token string) Option {
+	return func(o *options) {
+		if o.header == nil {
+			o.header = make(http.Header)
+		}
+		o.header.Set("Authorization", "Bearer "+token)
 	}
 }
 
